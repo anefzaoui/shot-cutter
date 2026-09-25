@@ -1,22 +1,41 @@
 {
   "name": "shot-cutter",
-  "version": "1.0.0",
-  "description": "Standalone CLI that splits any video into its shots, cut precisely on detected shot boundaries. Zero npm dependencies; requires ffmpeg/ffprobe.",
+  "version": "1.1.0",
+  "description": "Split any video into its shots, or find its stale (dead-air) parts — as a CLI or an importable library. Zero npm dependencies; requires ffmpeg/ffprobe.",
   "type": "module",
+  "main": "./index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "shot-cutter": "./shot-cutter.js"
+  },
+  "files": [
+    "index.js",
+    "lib/",
+    "shot-cutter.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
   },
+  "license": "MIT",
   "keywords": [
     "video",
     "shot-detection",
     "scene-detection",
+    "silence-detection",
+    "dead-air",
     "ffmpeg",
     "dataset",
     "lora",
-    "video-splitting"
+    "video-splitting",
+    "video-editing"
   ],
   "repository": {
     "type": "git",
