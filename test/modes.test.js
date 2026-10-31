@@ -4,6 +4,9 @@
 //   dissolve  testsrc2 → cellauto, 1 s cross-fade from 2 s to 3 s
 //   pan       a fast pan (28 px/frame on a 180 px frame) over one still image, 1 s → 2.5 s
 //   flash     one shot with a 2-frame white flash at 2 s
+//   dip       a blue shot fades to black (2.6-3 s), an orange shot fades in from black (3-3.4 s): fade through dark, cut at 3 s
+//   shadow    the same fade out/in, but the same shot on both sides (a face going into shadow): no dip cut
+//   card      testsrc2, hard cut to a 0.6 s black card at 3 s, hard cut to cellauto at 3.6 s
 // The ml/hybrid plumbing runs against a stub runner (node script standing in for Python), so these tests need no
 // TransNetV2. With SHOT_CUTTER_PYTHON pointing at a Python that has it, the real-model tests run too.
 import { test, before, after } from 'node:test';
@@ -28,6 +31,8 @@ before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shot-cutter-modes-'));
   const enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', '-y', '-loglevel', 'error'];
   const A = 'testsrc2=s=180x320:r=25:d=3,format=yuv420p', B = 'cellauto=s=180x320:r=25:rule=18,trim=duration=3,format=yuv420p,settb=1/25';
+  const BOX_A = "drawbox=x='20+t*6':y=100:w=60:h=140:color=0x1d4a52:t=fill,noise=alls=4:allf=t";
+  const BOX_B = "drawbox=x='110-t*6':y=40:w=55:h=90:color=0xf0e0c0:t=fill,noise=alls=4:allf=t";
   const make = (name, args) => { clip[name] = path.join(dir, `${name}.mp4`); return run(FFMPEG, [...args, ...enc, clip[name]]); };
   await Promise.all([
     // (trim/format/settb inside the lavfi inputs: ffmpeg 7.0 loses cellauto's frame rate after trim in a filtergraph)
@@ -36,6 +41,13 @@ before(async () => {
       '-filter_complex', "[0]drawbox=x='20+t*6':y=100:w=60:h=140:color=0x1d4a52:t=fill,noise=alls=4:allf=t[a];"
         + "[1]drawbox=x='110-t*6':y=120:w=55:h=150:color=0x1f4e57:t=fill,noise=alls=4:allf=t[b];[a][b]concat=n=2:v=1:a=0"]),
     make('dissolve', ['-f', 'lavfi', '-i', A, '-f', 'lavfi', '-i', B, '-filter_complex', '[0]settb=1/25[a];[a][1]xfade=transition=fade:duration=1:offset=2']),
+    // flat colour + a slowly moving box + sensor noise: smooth fades, so only the dip detector sees them
+    make('dip', ['-f', 'lavfi', '-i', 'color=c=0x3c78a0:s=180x320:r=25:d=3', '-f', 'lavfi', '-i', 'color=c=0xc89050:s=180x320:r=25:d=3',
+      '-filter_complex', `[0]${BOX_A},fade=t=out:st=2.6:d=0.4[a];[1]${BOX_B},fade=t=in:st=0:d=0.4[b];[a][b]concat=n=2:v=1:a=0`]),
+    make('shadow', ['-f', 'lavfi', '-i', 'color=c=0x3c78a0:s=180x320:r=25:d=6', '-filter_complex',
+      `[0]${BOX_A},split[x][y];[x]trim=0:3,fade=t=out:st=2.6:d=0.4[a];[y]trim=3:6,setpts=PTS-STARTPTS,fade=t=in:st=0:d=0.4[b];[a][b]concat=n=2:v=1:a=0`]),
+    make('card', ['-f', 'lavfi', '-i', A, '-f', 'lavfi', '-i', 'color=c=black:s=180x320:r=25:d=0.6,format=yuv420p', '-f', 'lavfi', '-i', B,
+      '-filter_complex', '[0]settb=1/25[a];[1]settb=1/25[k];[a][k][2]concat=n=3:v=1:a=0']),
     make('flash', ['-f', 'lavfi', '-i', 'testsrc2=s=180x320:r=25:d=4',
       '-vf', "drawbox=enable='between(n,50,51)':x=0:y=0:w=iw:h=ih:color=white:t=fill"]),
     (async () => {
@@ -107,8 +119,64 @@ test('sensitive: a white flash inside a shot is vetoed (fast mode cuts there)', 
   assert.ok(near(kept.boundaries, 2));
 });
 
+// the adaptive spike detectors also fire on these perfectly smooth synthetic fades (real fades carry motion and grain),
+// so the dip detector is checked alone with them switched off, and the default mode for the end result
+const DIP_ONLY = { adaptiveThreshold: 1e9 };
+
+test('sensitive: a fade through dark between two shots is cut once, at its darkest frame (fast misses it)', async () => {
+  assert.equal((await detectShots(clip.dip)).boundaries.length, 0);
+  const r = await detectShots(clip.dip, { mode: 'sensitive', ...DIP_ONLY });
+  assert.equal(r.boundaries.length, 1, JSON.stringify(r.boundaries));
+  assert.deepEqual(r.boundaries[0].detectors, ['dip']);
+  assert.ok(near(r.boundaries, 3, 0.05), String(r.boundaries[0].time));
+  assert.equal(r.dipCount, 1);
+  assert.equal((await detectShots(clip.dip, { mode: 'sensitive', ...DIP_ONLY, dips: false })).boundaries.length, 0);
+  const all = await detectShots(clip.dip, { mode: 'sensitive' });
+  assert.equal(all.boundaries.length, 1, JSON.stringify(all.boundaries));
+  assert.ok(near(all.boundaries, 3, 0.05));
+});
+
+test('sensitive: a dip with the same picture on both sides (shadow) is not cut', async () => {
+  const r = await detectShots(clip.shadow, { mode: 'sensitive', ...DIP_ONLY });
+  assert.equal(r.boundaries.length, 0, JSON.stringify(r.boundaries));
+  assert.equal(r.dipCount, 0);
+  assert.ok((await detectShots(clip.shadow, { mode: 'sensitive' })).boundaries.every((b) => !b.detectors.includes('dip')));
+});
+
+test('sensitive: a black card that is a shot of its own is not split at its darkest frame', async () => {
+  for (const opts of [{}, { dipMaxHold: 1 }]) {
+    const r = await detectShots(clip.card, { mode: 'sensitive', ...opts });
+    assert.equal(r.boundaries.length, 2, JSON.stringify(r.boundaries));
+    assert.ok(near(r.boundaries, 3, 0.05) && near(r.boundaries, 3.6, 0.05), JSON.stringify(r.boundaries));
+    assert.ok(r.boundaries.every((b) => !b.detectors.includes('dip')));
+  }
+});
+
+test('dipCandidates on a synthetic luma series: depth, rise and before/after rules', async () => {
+  const { dipCandidates } = await import('../index.js');
+  const fps = 25, n = 100, times = Array.from({ length: n }, (_, i) => i / fps);
+  const flat = (v) => Float32Array.from({ length: 64 }, (_, k) => v + (k % 8) * 4 * (k < 32 ? 1 : -1));
+  const other = (v) => Float32Array.from({ length: 64 }, (_, k) => v + ((k >> 3) % 4) * 6);
+  const hist = (v) => [Float32Array.from({ length: 32 }, (_, k) => (k === Math.min(31, v >> 3) ? 1 : 0)), new Float32Array(16).fill(1 / 16), new Float32Array(16).fill(1 / 16)];
+  const series = (lum, sameAfter) => ({
+    frames: n, luma: lum, yuv: lum.map((v, i) => hist(i < 50 || sameAfter ? 100 : 160)),
+    // the dark frames are dark everywhere (a fade), the others are the before/after pictures
+    grid: lum.map((v, i) => (v < 60 ? new Float32Array(64).fill(v) : i < 50 || sameAfter ? flat(100) : other(160))),
+  });
+  // 100 → 5 at frame 50 (6-frame fall) → back up within 6 frames
+  const valley = Array.from({ length: n }, (_, i) => (i < 44 ? 100 : i < 50 ? 100 - (i - 43) * 15 : i === 50 ? 5 : i < 57 ? 5 + (i - 50) * 18 : 120));
+  const hit = dipCandidates(series(valley, false), times, fps);
+  assert.equal(hit.length, 1);
+  assert.equal(hit[0].time, times[50]);
+  assert.equal(dipCandidates(series(valley, true), times, fps).length, 0, 'same picture both sides');
+  const shallow = valley.map((v) => Math.max(v, 50)); // only to half the reference: not a dip
+  assert.equal(dipCandidates(series(shallow, false), times, fps).length, 0);
+  const stays = valley.map((v, i) => (i > 50 ? 6 : v)); // never comes back up: a fade-out, not a dip
+  assert.equal(dipCandidates(series(stays, false), times, fps).length, 0);
+});
+
 test('sensitiveArgs + detectShotsFromLog (ffmpeg run elsewhere) give the same result as detectShots', async () => {
-  for (const name of ['hard', 'low', 'flash']) {
+  for (const name of ['hard', 'low', 'flash', 'dip']) {
     const probe = await probeVideo(clip[name]);
     const rawFile = path.join(dir, `${name}.rgb`), lines = [];
     await run(FFMPEG, sensitiveArgs(clip[name], probe, {}, rawFile), { onLine: (l) => lines.push(l) });

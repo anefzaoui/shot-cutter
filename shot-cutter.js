@@ -60,6 +60,7 @@ ${c.bold('Shots options:')}
   --adaptive-threshold <n>  Spike/median ratio for adaptive detectors (default: ${MODE_DEFAULTS.adaptiveThreshold})
   --min-content <n>      Adaptive content-difference floor 0..255 (default: ${MODE_DEFAULTS.minContent})
   --min-hist <n>         Adaptive histogram-difference floor 0..100 (default: ${MODE_DEFAULTS.minHist})
+  --no-dips              (sensitive, hybrid) do not cut fades through dark
   --no-flash-filter      Keep reports whose old picture comes back within 0.5 s (flashes, passing bodies)
   --no-setup-filter      Keep reports where the camera set-up did not change (lightning, flicker)
   --ml-threshold <n>     TransNetV2 transition probability (default: ${MODE_DEFAULTS.mlThreshold})
@@ -112,6 +113,7 @@ function parseArgs(argv) {
       case '--adaptive-threshold': o.modeOpts.adaptiveThreshold = num(arg, next()); break;
       case '--min-content': o.modeOpts.minContent = num(arg, next()); break;
       case '--min-hist': o.modeOpts.minHist = num(arg, next()); break;
+      case '--no-dips': o.modeOpts.dips = false; break;
       case '--no-flash-filter': o.modeOpts.flashFilter = false; break;
       case '--no-setup-filter': o.modeOpts.setupFilter = false; break;
       case '--ml-threshold': o.modeOpts.mlThreshold = num(arg, next()); break;
