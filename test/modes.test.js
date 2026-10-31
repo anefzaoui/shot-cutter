@@ -14,7 +14,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import {
-  run, FFMPEG, detectShots, reconcileBoundaries, mlCandidates, mlAvailable, MlUnavailableError, MODES,
+  run, FFMPEG, probeVideo, detectShots, detectShotsFromLog, sensitiveArgs, reconcileBoundaries, mlCandidates, mlAvailable,
+  MlUnavailableError, MODES,
 } from '../index.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -104,6 +105,18 @@ test('sensitive: a white flash inside a shot is vetoed (fast mode cuts there)', 
   assert.ok(setupOnly.vetoed.every((v) => v.reason === 'same-setup'));
   const kept = await detectShots(clip.flash, { mode: 'sensitive', flashFilter: false, setupFilter: false });
   assert.ok(near(kept.boundaries, 2));
+});
+
+test('sensitiveArgs + detectShotsFromLog (ffmpeg run elsewhere) give the same result as detectShots', async () => {
+  for (const name of ['hard', 'low', 'flash']) {
+    const probe = await probeVideo(clip[name]);
+    const rawFile = path.join(dir, `${name}.rgb`), lines = [];
+    await run(FFMPEG, sensitiveArgs(clip[name], probe, {}, rawFile), { onLine: (l) => lines.push(l) });
+    const viaLog = await detectShotsFromLog({ log: lines.join('\n'), raw: fs.readFileSync(rawFile), probe });
+    const direct = await detectShots(clip[name], { mode: 'sensitive' });
+    assert.deepEqual(viaLog.boundaries, direct.boundaries, name);
+    assert.deepEqual(viaLog.vetoed, direct.vetoed, name);
+  }
 });
 
 test('min-shot and gap rules still apply in sensitive mode', async () => {

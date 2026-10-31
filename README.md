@@ -207,6 +207,18 @@ s.vetoed;         // reports dropped by the flash veto
 const ok = await mlAvailable();  // { ok, backend, device } or { ok: false, error }
 ```
 
+When ffmpeg has to run somewhere else (a job runner, another machine) and only its log and
+output files come back, split the sensitive pass in two:
+
+```js
+const probe = await probeVideo(file);
+const args = sensitiveArgs(file, probe, {}, '/tmp/thumbs.rgb');  // run `ffmpeg ...args` anywhere, keep stderr
+const r = await detectShotsFromLog({ log: stderr, raw: fs.readFileSync('/tmp/thumbs.rgb'), probe });
+// hybrid: add `predictions` (the JSON printed by tools/transnetv2_runner.py)
+```
+
+The thumbnails are small (64 px long side: ~7 KB per frame, ~17 MB for 100 s at 24 fps).
+
 `detectShots(file, opts)` without `mode` is the v1.1 call, unchanged. The building blocks
 are exported too (`FrameAnalyzer`, `adaptiveCandidates`, `runTransNet`, `mlCandidates`,
 `reconcileBoundaries` with optional `prefer` / `withScores`).
