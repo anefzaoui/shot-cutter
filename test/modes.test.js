@@ -18,26 +18,28 @@ import {
 } from '../index.js';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
+// checked before any test is registered (a later top-level await would register tests after the cleanup hook ran)
+const realMl = await mlAvailable();
 let dir; const clip = {};
 const near = (bs, t, tol = 0.1) => bs.some((b) => Math.abs(b.time - t) <= tol);
 
 before(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'shot-cutter-modes-'));
   const enc = ['-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '18', '-pix_fmt', 'yuv420p', '-y', '-loglevel', 'error'];
+  const A = 'testsrc2=s=180x320:r=25:d=3,format=yuv420p', B = 'cellauto=s=180x320:r=25:rule=18,trim=duration=3,format=yuv420p,settb=1/25';
   const make = (name, args) => { clip[name] = path.join(dir, `${name}.mp4`); return run(FFMPEG, [...args, ...enc, clip[name]]); };
   await Promise.all([
-    make('hard', ['-f', 'lavfi', '-i', 'testsrc2=s=180x320:r=25:d=3', '-f', 'lavfi', '-i', 'cellauto=s=180x320:r=25:rule=18',
-      '-filter_complex', '[1]trim=duration=3,setpts=PTS-STARTPTS,format=yuv420p[b];[0][b]concat=n=2:v=1:a=0']),
+    // (trim/format/settb inside the lavfi inputs: ffmpeg 7.0 loses cellauto's frame rate after trim in a filtergraph)
+    make('hard', ['-f', 'lavfi', '-i', A, '-f', 'lavfi', '-i', B, '-filter_complex', '[0]settb=1/25[a];[a][1]concat=n=2:v=1:a=0']),
     make('low', ['-f', 'lavfi', '-i', 'color=c=0x2a6670:s=180x320:r=25:d=3', '-f', 'lavfi', '-i', 'color=c=0x2c6a74:s=180x320:r=25:d=3',
       '-filter_complex', "[0]drawbox=x='20+t*6':y=100:w=60:h=140:color=0x1d4a52:t=fill,noise=alls=4:allf=t[a];"
         + "[1]drawbox=x='110-t*6':y=120:w=55:h=150:color=0x1f4e57:t=fill,noise=alls=4:allf=t[b];[a][b]concat=n=2:v=1:a=0"]),
-    make('dissolve', ['-f', 'lavfi', '-i', 'testsrc2=s=180x320:r=25:d=3', '-f', 'lavfi', '-i', 'cellauto=s=180x320:r=25:rule=18',
-      '-filter_complex', '[1]trim=duration=3,setpts=PTS-STARTPTS,format=yuv420p[b];[0][b]xfade=transition=fade:duration=1:offset=2']),
+    make('dissolve', ['-f', 'lavfi', '-i', A, '-f', 'lavfi', '-i', B, '-filter_complex', '[0]settb=1/25[a];[a][1]xfade=transition=fade:duration=1:offset=2']),
     make('flash', ['-f', 'lavfi', '-i', 'testsrc2=s=180x320:r=25:d=4',
       '-vf', "drawbox=enable='between(n,50,51)':x=0:y=0:w=iw:h=ih:color=white:t=fill"]),
     (async () => {
       const still = path.join(dir, 'big.png');
-      await run(FFMPEG, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=1200x320:r=1:d=1', '-frames:v', '1', still]);
+      await run(FFMPEG, ['-y', '-loglevel', 'error', '-f', 'lavfi', '-i', 'testsrc2=s=1200x320:r=1:d=1', '-frames:v', '1', '-update', '1', still]);
       await make('pan', ['-loop', '1', '-framerate', '25', '-t', '4', '-i', still, '-vf', "crop=180:320:x='clip((t-1)*700,0,1020)':y=0"]);
     })(),
   ]);
@@ -192,7 +194,6 @@ test('CLI: fast manifest settings keep the v1.1 shape; --mode adds mode and per-
 });
 
 // ---- the real model, only where it is installed ----
-const realMl = await mlAvailable();
 test('ml (real TransNetV2): hard cut found, dissolve and pan not split', { skip: realMl.ok ? false : 'TransNetV2 helper not installed (set SHOT_CUTTER_PYTHON)' }, async () => {
   const hard = await detectShots(clip.hard, { mode: 'ml' });
   assert.ok(near(hard.boundaries, 3, 0.05), JSON.stringify(hard.boundaries));
