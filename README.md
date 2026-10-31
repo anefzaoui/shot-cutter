@@ -50,7 +50,10 @@ node shot-cutter.js episode.mp4 --dry-run
 
 ## How detection works
 
-Two independent ffmpeg detectors run in a single decode pass:
+`--mode` picks the detector set (default `fast`, unchanged since v1.0). See
+[Cut modes](#cut-modes-v12) for `sensitive`, `ml` and `hybrid`.
+
+In `fast` mode two independent ffmpeg detectors run in a single decode pass:
 
 1. Primary: `select='gt(scene,T)'` with `showinfo`, frame-difference scene scoring
    with frame-accurate timestamps.
@@ -70,6 +73,118 @@ keyframes, so stream-copying would shift cuts by up to a GOP. After cutting, eve
 output is probed and its real duration checked against plan; anything drifting more
 than 0.25s gets a warning. (v1.0 ran one ffmpeg process per shot; one pass is
 several times faster on shot-dense videos.)
+
+## Cut modes (v1.2)
+
+| Mode | What runs | Use it for |
+|---|---|---|
+| `fast` (default) | `select 'scene'` + `scdet`, fixed thresholds, one decode pass | v1.0/v1.1 behavior, fastest, very few false cuts |
+| `sensitive` | `fast` + adaptive detectors on per-frame thumbnails, **same single decode pass**, + flash and same-set-up vetoes | cuts between similar-looking shots (same palette and light), quick dissolves |
+| `ml` | TransNetV2 (shot-boundary network) through an optional Python helper | a learned second opinion; needs the helper installed |
+| `hybrid` | `sensitive` and `ml` together, boundaries = union, each tagged with who found it | the most complete list, with a per-boundary agreement flag to review |
+
+```bash
+node shot-cutter.js episode.mp4 --mode sensitive --dry-run
+node shot-cutter.js episode.mp4 --mode hybrid --python ~/.shot-cutter-ml/bin/python
+```
+
+**Why fast misses some cuts.** Its thresholds are absolute: a cut between two dark
+blue-teal close-ups scores `scene` 0.21–0.24 and `scdet` 8–9, under the 0.3 / 10
+thresholds, even though the frames around it score ~0.002.
+
+**`sensitive`** keeps both fast detectors and adds, from 64-px rgb thumbnails decoded in the
+same ffmpeg pass (pure JS, no extra dependency):
+
+- **Repeated frames are skipped first.** Many web videos repeat frames (frame-rate
+  conversion, low-fps sources): the test originals repeat about every other frame. A series
+  that alternates motion with zeros makes every ordinary motion frame look like a spike, so
+  only distinct frames are compared and the time windows use the distinct-frame rate
+  (`detection.analysis` reports both counts).
+
+- `adaptive-content`: the HSV content difference between a frame and the previous one
+  (PySceneDetect ContentDetector style, hue weighted by saturation so noise in dark grey
+  pixels does not count), divided by the **rolling median of its neighbours** (3 frames on
+  each side, PySceneDetect AdaptiveDetector style). A cut is a spike over its neighbourhood,
+  so a small absolute change still stands out; a pan or a walk is high on every frame and
+  never does. Fires at ratio ≥ `--adaptive-threshold` (3) and content ≥ `--min-content` (4).
+- `adaptive-hist`: the same on a luma (32-bin) + chroma (2×16-bin) histogram distance
+  (`--min-hist` 3). Catches a change of light or palette even under sensor noise.
+- `adaptive-short`: a 2-frame to 0.3 s transition (a quick dissolve, a dip, a motion-blurred
+  cut): the frame before vs the frame after the window, against the same-lag difference on
+  **both** sides of it, which must be calm. A long dissolve or a pan is never calm on both sides.
+- flash veto (`--no-flash-filter` to disable): any report, fast detectors' included, whose
+  old picture comes back within 0.5 s (a camera flash, a body passing the lens), or whose new
+  picture was already there just before, is dropped and listed in `detection.vetoed`
+  (`reason: "returned"`).
+- same-set-up veto (`--no-setup-filter`): the frame before the cut and the frame after it are
+  compared as brightness-normalized pictures (cross-correlation of luma, and of the edge
+  picture). If both still correlate (edges ≥ 0.75 and luma ≥ 0.7) the camera did not move,
+  only the light changed: lightning, a lamp, flicker, an encoder keyframe pulse. Dropped with
+  `reason: "same-setup"`. On the test footage every real cut scored ≤ 0.65 on edges and every
+  lighting change ≥ 0.75. A jump cut inside one fixed set-up is dropped too, by design.
+- `dissolve` (only with `--dissolves`): a longer cross-fade, cut once at its middle. Its
+  middle frames must be blends of the frames before and after it, which a pan never is.
+  Without `--dissolves` a long dissolve is never split.
+
+The usual `--gap` / `--min-shot` rules apply to every mode, with one difference outside
+`fast`: when two boundaries are closer than `--min-shot`, the **stronger** one is kept (more
+detectors, then a fast detector, then score) instead of always merging the short shot into
+the previous one, which in `fast` can keep a weak report and drop the real cut a few frames
+before it. Reports of one cut from
+different detectors are clustered within `max(--tolerance, --gap)` and the boundary keeps
+all of them: `detectors`, `consensus` (two or more detectors), and `scores` per detector.
+
+### ML mode (optional TransNetV2 helper)
+
+`tools/transnetv2_runner.py` runs [TransNetV2](https://github.com/soCzech/TransNetV2)
+on all frames (48x27, the model's input, decoded by ffmpeg in one pass) and returns
+per-frame transition probabilities. shot-cutter never needs it unless `--mode ml|hybrid`
+is asked for, and then fails with a clear message and these install steps if it is missing.
+Install it isolated, in its own venv (or a `pip --target` dir on `PYTHONPATH`):
+
+```bash
+python3 -m venv ~/.shot-cutter-ml            # no ensurepip? python3 -m venv --without-pip + get-pip.py
+~/.shot-cutter-ml/bin/pip install torch --index-url https://download.pytorch.org/whl/cpu
+~/.shot-cutter-ml/bin/pip install transnetv2-pytorch   # MIT port, weights included
+export SHOT_CUTTER_PYTHON=~/.shot-cutter-ml/bin/python   # or --python / opts.python
+node shot-cutter.js --ml-check
+```
+
+The original TensorFlow `transnetv2` package also works if it is importable instead.
+`SHOT_CUTTER_ML_RUNNER` / `opts.mlRunner` point at another runner with the same JSON
+output. The model runs on CPU by default (`--device cuda|auto` to change); it holds every
+48x27 frame in memory (~4 KB per frame, ~0.7 GB for two hours at 24 fps).
+
+A run of frames over `--ml-threshold` (0.5) is one transition; its length comes from the
+model's many-hot output. A short one is a cut on the frame after the peak (TransNetV2 marks
+the last frame of the outgoing shot); a long one is a dissolve, split only with `--dissolves`.
+`ml` alone has no frame data, so no vetoes; `hybrid` applies both vetoes to the model's
+reports too, and marks every boundary `agreement: both | sensitive | ml`.
+
+### Trade-offs
+
+Measured on three originals of a vertical micro-drama (540x960, 24 fps, 100–125 s each,
+dark blue/teal hospital scenes, lightning, burned-in subtitles, repeated frames), against
+`fast`'s output, every disagreement checked by eye on the frames around it:
+
+| Mode | Real cuts `fast` missed (15) | Real cuts lost | False cuts added | `fast`'s false cuts removed (4) | Time per episode* |
+|---|---|---|---|---|---|
+| `fast` | 0 | – | – | 0 | 3–5 s |
+| `sensitive` | 14 | 0 | 1 | 2 | 5–6 s |
+| `ml` (CPU) | 13 | 4 | 1 | 1 | 62–74 s |
+| `hybrid` | 15 | 0 | 1 | 2 | 70–190 s |
+
+\* 4-core server under other load; the ml model itself is most of its time (CPU, no GPU).
+
+- `sensitive` is the default to reach for: a few seconds more than `fast`, no dependency, and
+  it also put two of `fast`'s late cuts on the right frame (fast's short-shot merge had kept a
+  report 4–6 frames after the real cut). Its one miss was a slow fade from black (longer than
+  `shortTransition`); its one false cut was a lightning flicker over a short window.
+- `ml` saw the fade from black, but lost real cuts in fast action (falls, slaps) and two
+  flash/flare transitions, kept lightning, and is 15–20x slower on CPU.
+- `hybrid` = `sensitive` plus what only the model sees (here: the fade), at the model's cost.
+- Two real cuts closer than `--min-shot` (a 0.25 s insert during a slap) still become one
+  boundary in every mode; lower `--min-shot` if such inserts matter.
 
 ## Stale mode: find the dead air
 
@@ -105,7 +220,29 @@ await renderKeep('take.mp4', keep, 'tight.mp4');
 
 const { boundaries, shots } = await detectShots('episode.mp4', { threshold: 0.3 });
 await cutSegments('episode.mp4', shots.slice(1).map((s) => s.start), './shots');
+
+// v1.2 modes: same call, same result shape, plus mode details
+const s = await detectShots('episode.mp4', { mode: 'sensitive' });   // or 'ml' / 'hybrid' (+ { python })
+s.boundaries[0];  // { time, detectors, consensus, score, scores: { 'adaptive-hist': 12.4, ... }, agreement? }
+s.vetoed;         // reports dropped by the flash veto
+const ok = await mlAvailable();  // { ok, backend, device } or { ok: false, error }
 ```
+
+When ffmpeg has to run somewhere else (a job runner, another machine) and only its log and
+output files come back, split the sensitive pass in two:
+
+```js
+const probe = await probeVideo(file);
+const args = sensitiveArgs(file, probe, {}, '/tmp/thumbs.rgb');  // run `ffmpeg ...args` anywhere, keep stderr
+const r = await detectShotsFromLog({ log: stderr, raw: fs.readFileSync('/tmp/thumbs.rgb'), probe });
+// hybrid: add `predictions` (the JSON printed by tools/transnetv2_runner.py)
+```
+
+The thumbnails are small (64 px long side: ~7 KB per frame, ~17 MB for 100 s at 24 fps).
+
+`detectShots(file, opts)` without `mode` is the v1.1 call, unchanged. The building blocks
+are exported too (`FrameAnalyzer`, `adaptiveCandidates`, `runTransNet`, `mlCandidates`,
+`reconcileBoundaries` with optional `prefer` / `withScores`).
 
 Importing has no side effects (no CLI parsing, no `process.exit`). Every long call takes
 `{ onProgress, signal }`. `detectStale` also returns the energy `envelope`, and
@@ -116,8 +253,10 @@ Install from git: `npm i github:anefzaoui/shot-cutter`.
 ## Tests
 
 `npm test` generates synthetic clips with ffmpeg (tone bursts over a noise floor, three
-solid-color shots) and checks stale detection, shot detection, one-pass cutting and
-rendering.
+solid-color shots; for the modes: a hard cut, a low-contrast cut between two near-identical
+teal shots, a 1 s dissolve, a fast pan, a white flash) and checks stale detection, every cut
+mode, one-pass cutting and rendering. The `ml`/`hybrid` plumbing is tested with a stub runner;
+the real-model test runs only when `SHOT_CUTTER_PYTHON` has TransNetV2.
 
 ## Options
 
@@ -129,6 +268,16 @@ rendering.
 | `--min-shot <sec>` | 0.5 | Merge shots shorter than this into a neighbor |
 | `--gap <sec>` | 0.12 | Minimum spacing between boundaries |
 | `--tolerance <sec>` | 0.06 | Window in which the two detectors count as agreeing |
+| `--mode <m>` | fast | `fast`, `sensitive`, `ml` or `hybrid` (see Cut modes) |
+| `--dissolves` | off | Non-fast modes: cut long dissolves once, at the middle |
+| `--adaptive-threshold <n>` | 3 | Spike / neighbour-median ratio |
+| `--min-content <n>` / `--min-hist <n>` | 4 / 3 | Adaptive floors (0..255 / 0..100) |
+| `--no-flash-filter` | off | Keep reports whose old picture comes back within 0.5 s |
+| `--no-setup-filter` | off | Keep reports where the camera set-up did not change |
+| `--ml-threshold <n>` | 0.5 | TransNetV2 transition probability |
+| `--python <path>` | `$SHOT_CUTTER_PYTHON` or python3 | Python with TransNetV2 |
+| `--device <d>` | cpu | TransNetV2 device (`cpu`, `cuda`, `auto`) |
+| `--ml-check` | | Check the ml helper and exit |
 | `--crf <n>` | 18 | x264 quality for the cut files |
 | `--preset <p>` | medium | x264 preset |
 | `--strip-audio` | off | Write video-only shot files |
@@ -149,7 +298,7 @@ Everything about the run, for downstream tooling:
 
 ```jsonc
 {
-  "tool": "shot-cutter", "version": "1.1.0", "createdAt": "...",
+  "tool": "shot-cutter", "version": "1.2.0", "createdAt": "...",
   "source": {
     "path": "...", "file": "original.mp4",
     "fingerprint": { "sizeBytes": 57809109, "mtimeMs": 1756130000000 },
@@ -167,7 +316,10 @@ Everything about the run, for downstream tooling:
 }
 ```
 
-Manifest `file` entries use forward slashes on every OS.
+Manifest `file` entries use forward slashes on every OS. In non-fast modes `settings` also
+holds `mode` and the mode options, `detection` holds `mode`, candidate counts, `timings`,
+`vetoed` and (ml) the backend, and each boundary adds `scores` (and `agreement` in hybrid).
+A fast-mode manifest is identical to v1.1's.
 
 ## Resuming
 
