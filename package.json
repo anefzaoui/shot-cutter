@@ -1,7 +1,7 @@
 {
   "name": "shot-cutter",
-  "version": "1.1.0",
-  "description": "Split any video into its shots, or find its stale (dead-air) parts — as a CLI or an importable library. Zero npm dependencies; requires ffmpeg/ffprobe.",
+  "version": "1.2.0",
+  "description": "Split any video into its shots (fast, sensitive, ML or hybrid cut detection), or find its stale (dead-air) parts \u2014 as a CLI or an importable library. Zero npm dependencies; requires ffmpeg/ffprobe (TransNetV2 optional).",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -14,6 +14,7 @@
   "files": [
     "index.js",
     "lib/",
+    "tools/",
     "shot-cutter.js",
     "README.md",
     "LICENSE"
@@ -35,7 +36,9 @@
     "dataset",
     "lora",
     "video-splitting",
-    "video-editing"
+    "video-editing",
+    "transnetv2",
+    "adaptive-detector"
   ],
   "repository": {
     "type": "git",
