@@ -163,7 +163,28 @@ reports too, and marks every boundary `agreement: both | sensitive | ml`.
 
 ### Trade-offs
 
-RESULTS_PLACEHOLDER
+Measured on three originals of a vertical micro-drama (540x960, 24 fps, 100–125 s each,
+dark blue/teal hospital scenes, lightning, burned-in subtitles, repeated frames), against
+`fast`'s output, every disagreement checked by eye on the frames around it:
+
+| Mode | Real cuts `fast` missed (15) | Real cuts lost | False cuts added | `fast`'s false cuts removed (4) | Time per episode* |
+|---|---|---|---|---|---|
+| `fast` | 0 | – | – | 0 | 3–5 s |
+| `sensitive` | 14 | 0 | 1 | 2 | 5–6 s |
+| `ml` (CPU) | 13 | 4 | 1 | 1 | 62–74 s |
+| `hybrid` | 15 | 0 | 1 | 2 | 70–190 s |
+
+\* 4-core server under other load; the ml model itself is most of its time (CPU, no GPU).
+
+- `sensitive` is the default to reach for: a few seconds more than `fast`, no dependency, and
+  it also put two of `fast`'s late cuts on the right frame (fast's short-shot merge had kept a
+  report 4–6 frames after the real cut). Its one miss was a slow fade from black (longer than
+  `shortTransition`); its one false cut was a lightning flicker over a short window.
+- `ml` saw the fade from black, but lost real cuts in fast action (falls, slaps) and two
+  flash/flare transitions, kept lightning, and is 15–20x slower on CPU.
+- `hybrid` = `sensitive` plus what only the model sees (here: the fade), at the model's cost.
+- Two real cuts closer than `--min-shot` (a 0.25 s insert during a slap) still become one
+  boundary in every mode; lower `--min-shot` if such inserts matter.
 
 ## Stale mode: find the dead air
 
