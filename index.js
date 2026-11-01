@@ -5,6 +5,6 @@ export { detectStale, analyzeEnvelope, audioEnvelope, quietestPoint, levels, STA
 export { cutSegments, renderKeep } from './lib/cut.js';
 export { MODES, MODE_DEFAULTS, sensitivePass, sensitiveArgs, modeCandidates, analysisDims } from './lib/modes.js';
 export { FrameAnalyzer, contentDiff, histDiff } from './lib/frames.js';
-export { adaptiveCandidates, returnVeto, ADAPTIVE_DEFAULTS } from './lib/adaptive.js';
+export { adaptiveCandidates, dipCandidates, returnVeto, ADAPTIVE_DEFAULTS } from './lib/adaptive.js';
 export { mlAvailable, runTransNet, mlCandidates, MlUnavailableError, ML_DEFAULTS, DEFAULT_RUNNER as ML_RUNNER } from './lib/ml.js';
-export const VERSION = '1.2.0';
+export const VERSION = '1.3.0';

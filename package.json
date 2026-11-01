@@ -1,6 +1,6 @@
 {
   "name": "shot-cutter",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Split any video into its shots (fast, sensitive, ML or hybrid cut detection), or find its stale (dead-air) parts \u2014 as a CLI or an importable library. Zero npm dependencies; requires ffmpeg/ffprobe (TransNetV2 optional).",
   "type": "module",
   "main": "./index.js",

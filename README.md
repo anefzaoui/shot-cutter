@@ -79,7 +79,7 @@ several times faster on shot-dense videos.)
 | Mode | What runs | Use it for |
 |---|---|---|
 | `fast` (default) | `select 'scene'` + `scdet`, fixed thresholds, one decode pass | v1.0/v1.1 behavior, fastest, very few false cuts |
-| `sensitive` | `fast` + adaptive detectors on per-frame thumbnails, **same single decode pass**, + flash and same-set-up vetoes | cuts between similar-looking shots (same palette and light), quick dissolves |
+| `sensitive` | `fast` + adaptive detectors on per-frame thumbnails, **same single decode pass**, + flash and same-set-up vetoes, + fades through dark (v1.3) | cuts between similar-looking shots (same palette and light), quick dissolves, time-jump fades |
 | `ml` | TransNetV2 (shot-boundary network) through an optional Python helper | a learned second opinion; needs the helper installed |
 | `hybrid` | `sensitive` and `ml` together, boundaries = union, each tagged with who found it | the most complete list, with a per-boundary agreement flag to review |
 
@@ -122,6 +122,20 @@ same ffmpeg pass (pure JS, no extra dependency):
   only the light changed: lightning, a lamp, flicker, an encoder keyframe pulse. Dropped with
   `reason: "same-setup"`. On the test footage every real cut scored ≤ 0.65 on edges and every
   lighting change ≥ 0.75. A jump cut inside one fixed set-up is dropped too, by design.
+- `dip` (v1.3, `--no-dips` to disable): a fade through dark (fade-out, fade-in), the usual
+  time-jump transition of micro-dramas. Its frames change gradually, so no spike detector
+  sees it, and the scene before the jump stayed glued to the scene after it. The per-frame
+  mean luma of the same thumbnails is searched for valleys: the darkest frame is ≤ 40% of the
+  median of the 0.5 s before the fall (and that reference is ≥ 20 of 255), it stays dark
+  ≤ 0.5 s (longer = a black card, a shot of its own), the whole frame darkens (its brightest
+  8x8 block too: a pan across a dark area keeps bright parts), and within 0.8 s the luma is
+  back to ≥ 2x the minimum. It cuts at the darkest frame only if the picture 0.3 s before the
+  fall and the one 0.3 s after the rise differ: luma/chroma histogram distance ≥ 20 or mean
+  8x8 block-luma difference ≥ 15. A face going into shadow and out again keeps both, and is
+  not cut. A dip whose span already holds another detector's cut adds nothing (this also
+  keeps a black card's own cuts as they are). Measured on the 40 originals of one series:
+  one fade found that no other detector cut (a night close-up fading into "Eighteen Years
+  Later"), every other cut unchanged.
 - `dissolve` (only with `--dissolves`): a longer cross-fade, cut once at its middle. Its
   middle frames must be blends of the frames before and after it, which a pan never is.
   Without `--dissolves` a long dissolve is never split.
@@ -254,7 +268,8 @@ Install from git: `npm i github:anefzaoui/shot-cutter`.
 
 `npm test` generates synthetic clips with ffmpeg (tone bursts over a noise floor, three
 solid-color shots; for the modes: a hard cut, a low-contrast cut between two near-identical
-teal shots, a 1 s dissolve, a fast pan, a white flash) and checks stale detection, every cut
+teal shots, a 1 s dissolve, a fast pan, a white flash, a fade through dark between two shots
+and within one shot, a black card) and checks stale detection, every cut
 mode, one-pass cutting and rendering. The `ml`/`hybrid` plumbing is tested with a stub runner;
 the real-model test runs only when `SHOT_CUTTER_PYTHON` has TransNetV2.
 
@@ -272,6 +287,7 @@ the real-model test runs only when `SHOT_CUTTER_PYTHON` has TransNetV2.
 | `--dissolves` | off | Non-fast modes: cut long dissolves once, at the middle |
 | `--adaptive-threshold <n>` | 3 | Spike / neighbour-median ratio |
 | `--min-content <n>` / `--min-hist <n>` | 4 / 3 | Adaptive floors (0..255 / 0..100) |
+| `--no-dips` | off | Do not cut fades through dark (sensitive, hybrid) |
 | `--no-flash-filter` | off | Keep reports whose old picture comes back within 0.5 s |
 | `--no-setup-filter` | off | Keep reports where the camera set-up did not change |
 | `--ml-threshold <n>` | 0.5 | TransNetV2 transition probability |
